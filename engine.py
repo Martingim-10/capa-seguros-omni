@@ -3,7 +3,10 @@ Capa Seguros - Core Engine
 Normalización semántica de seguros, conector Sancor y guardrails antialucinación.
 """
 from typing import Dict, Any, List, Optional
-from src.core.telemetry import PilotTelemetryManager
+try:
+    from telemetry import PilotTelemetryManager
+except ModuleNotFoundError:
+    from src.core.telemetry import PilotTelemetryManager
 
 PILOTO_POLIZAS_SANCOR = {
     "29269803": [
