@@ -14,9 +14,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from src.core.engine import CapaEngine
 from src.core.smart_link import generar_smart_link, validar_smart_link
-from src.core.telemetry import PilotTelemetryManager
-
-# Inicialización de servicios
+try:
+    from engine import CapaEngine
+    from smart_link import generar_smart_link, validar_smart_link
+    from telemetry import PilotTelemetryManager
+except ModuleNotFoundError:
+    from src.core.engine import CapaEngine
+    from src.core.smart_link import generar_smart_link, validar_smart_link
+    from src.core.telemetry import PilotTelemetryManager
 telemetry = PilotTelemetryManager(fail_closed=True)
 engine = CapaEngine(telemetry=telemetry)
 
