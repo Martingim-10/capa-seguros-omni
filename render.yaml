@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: capa-seguros-omni
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python src/server/api_server.py
+    envVars:
+      - key: SMART_LINK_SECRET
+        generateValue: true
+      - key: PYTHONUNBUFFERED
+        value: "1"
