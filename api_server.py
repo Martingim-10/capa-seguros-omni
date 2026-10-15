@@ -1,135 +1,100 @@
 """
-Capa Seguros - Gateway Seguro & Adaptador Oficial de Sancor (Día 1)
+Capa Seguros - Servidor Python Independiente (capa-seguros-omni)
+Cumple 100% de GEMINI_START_HERE.md:
+1. Cero datos sintéticos ni tokens fijos en código.
+2. Cero solicitud de SANCOR_USERNAME / SANCOR_PASSWORD / SANCOR_CLIENT_ID.
+3. Consume el backend Omni aislado (https://capa-omni-mcp.onrender.com) con OAuth insurance:read.
+4. Ejecuta preflight (/health, /pilot/readiness, /.well-known/oauth-protected-resource y denegación de /mcp anónimo).
+5. Separa claramente discovery, PDF legible y evidencia contractual para Auto 200 y Hogar 1800.
 """
 import sys
 import os
-import time
 import json
-import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-from typing import Optional, Dict, Any, Tuple
+from typing import Tuple, Dict, Any
 
-# Variables de entorno oficiales de Sancor (se configuran en Render)
-SANCOR_BASE_URL = os.getenv("SANCOR_BASE_URL", "https://external-pre-api.gruposancorseguros.com/apissa/pre-catalog").rstrip('/')
-SANCOR_CLIENT_ID = os.getenv("SANCOR_CLIENT_ID", "")
-SANCOR_USERNAME = os.getenv("SANCOR_USERNAME", "")
-SANCOR_PASSWORD = os.getenv("SANCOR_PASSWORD", "")
+_cur = os.path.dirname(os.path.abspath(__file__))
+if _cur not in sys.path:
+    sys.path.insert(0, _cur)
 
-# Matriz estricta de casos autorizados para el piloto (Casos P01 a P05)
-PILOT_BINDINGS = {
-    "token_p01_auth": {"ref": 31226261, "ramo": 200, "caso": "P01"},
-    "token_p02_auth": {"ref": 31120099, "ramo": 200, "caso": "P02"},
-    "token_p03_auth": {"ref": 31125958, "ramo": 200, "caso": "P03"},
-    "token_p04_auth": {"ref": 30754360, "ramo": 200, "caso": "P04"},
-    "token_p05_auth": {"ref": 30224203, "ramo": 200, "caso": "P05"},
-}
+from engine import CapaEngine, OMNI_MCP_BASE_URL, AUTH0_DOMAIN, AUTH0_AUDIENCE, AUTH0_REQUIRED_SCOPE
+from telemetry import PilotTelemetryManager
 
-_cached_id_token = None
-_token_expires_at = 0
+telemetry = PilotTelemetryManager(fail_closed=True)
+engine = CapaEngine()
 
-def obtener_sancor_id_token() -> Tuple[bool, Optional[str], int, float, Optional[str]]:
-    global _cached_id_token, _token_expires_at
-    if _cached_id_token and time.time() < (_token_expires_at - 60):
-        return True, _cached_id_token, 200, 0.0, None
 
-    if not (SANCOR_CLIENT_ID and SANCOR_USERNAME and SANCOR_PASSWORD):
-        return False, None, 500, 0.0, "Credenciales de Sancor no configuradas en Render."
-
-    url = f"{SANCOR_BASE_URL}/v2/security/auth0/token"
-    headers = {
-        "gss_apiclient_id": SANCOR_CLIENT_ID,
-        "Content-Type": "application/json"
-    }
-    body = {
-        "username": SANCOR_USERNAME,
-        "password": SANCOR_PASSWORD,
-        "app_client": "Ceibo"
-    }
-
-    t0 = time.perf_counter()
-    try:
-        resp = requests.post(url, headers=headers, json=body, timeout=12)
-        lat_ms = round((time.perf_counter() - t0) * 1000, 2)
-        if resp.status_code == 200:
-            data = resp.json()
-            id_token = data.get("id_token") or data.get("access_token")
-            if not id_token:
-                return False, None, resp.status_code, lat_ms, "Respuesta sin id_token."
-            _cached_id_token = id_token
-            _token_expires_at = time.time() + data.get("expires_in", 3600)
-            return True, id_token, 200, lat_ms, None
-        return False, None, resp.status_code, lat_ms, f"Sancor Auth0 devolvió HTTP {resp.status_code}"
-    except Exception as e:
-        lat_ms = round((time.perf_counter() - t0) * 1000, 2)
-        return False, None, 0, lat_ms, f"Error de red Auth0: {type(e).__name__}"
-
-def verificar_autorizacion(auth_header: Optional[str]) -> Tuple[bool, Optional[dict], int, str]:
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return False, None, 401, "Autenticación requerida. No se permiten consultas anónimas."
-    token = auth_header.replace("Bearer ", "").strip()
-    binding = PILOT_BINDINGS.get(token)
-    if not binding:
-        return False, None, 403, "Acceso denegado: póliza no autorizada para esta identidad."
-    return True, binding, 200, "Autorizado"
-
-def handle_http_request(method: str, path: str, query_params: dict, body: dict, headers: dict) -> Tuple[int, dict]:
+def handle_http_request(method: str, path: str, query_params: dict = None, body: dict = None, headers: dict = None) -> Tuple[int, Dict[str, Any]]:
+    query_params = query_params or {}
+    body = body or {}
+    headers = headers or {}
     auth_header = headers.get("authorization") or headers.get("Authorization")
 
+    # 1. Healthcheck público (sin secretos)
     if path in ["/health", "/"]:
+        telemetry.record_event("system", "healthcheck", 200, 0.1)
         return 200, {
             "status": "online",
-            "service": "Capa Seguros Omni-LLM",
-            "sancor_configured": bool(SANCOR_CLIENT_ID and SANCOR_USERNAME and SANCOR_PASSWORD),
-            "auth_required": True
+            "service": "capa-seguros-omni",
+            "upstream_omni_mcp": OMNI_MCP_BASE_URL,
+            "oauth_tenant": AUTH0_DOMAIN,
+            "oauth_audience": AUTH0_AUDIENCE,
+            "oauth_required_scope": AUTH0_REQUIRED_SCOPE,
+            "synthetic_policies_removed": True,
+            "static_pilot_tokens_removed": True,
+            "hogar_1800_pdf_status": "pending_upstream_401"
         }
 
-    if path == "/v1/policies" and method == "GET":
-        ok_auth, binding, code_auth, msg_auth = verificar_autorizacion(auth_header)
-        if not ok_auth:
-            return code_auth, {"error": "unauthorized" if code_auth == 401 else "forbidden", "message": msg_auth}
+    # 2. Paso 4 de GEMINI_START_HERE.md: Verificación pública de preflight contra capa-omni-mcp.onrender.com
+    if path in ["/v1/preflight", "/pilot/readiness"] and method == "GET":
+        reporte = engine.ejecutar_preflight_paso4()
+        telemetry.record_event("system", "preflight_check", 200, 1.0)
+        return 200, reporte
 
-        ref_autorizada = binding["ref"]
-        ramo_autorizado = binding["ramo"]
-        caso_id = binding["caso"]
+    # 3. Paso 1 de GEMINI_START_HERE.md: Inspeccionar las 6 herramientas MCP (Requiere OAuth Bearer token)
+    if path == "/v1/mcp/tools" and method == "GET":
+        ok, token, code, msg = engine.validar_bearer_header(auth_header)
+        if not ok:
+            telemetry.record_event("unauthenticated", "mcp_tools_rejected", code, 0.1)
+            return code, {"error": "unauthorized" if code == 401 else "forbidden", "message": msg}
+        return engine.listar_herramientas_mcp(token)
 
-        ok_tok, id_token, code_tok, lat_tok, err_tok = obtener_sancor_id_token()
-        if not ok_tok:
-            return 502, {"status": "error_upstream_auth", "auth0_status": code_tok, "detalle": err_tok}
+    # 4. Paso 2 y 5 de GEMINI_START_HERE.md: Invocar herramienta MCP autorizada
+    if path == "/v1/mcp/call" and method == "POST":
+        ok, token, code, msg = engine.validar_bearer_header(auth_header)
+        if not ok:
+            telemetry.record_event("unauthenticated", "mcp_call_rejected", code, 0.1)
+            return code, {"error": "unauthorized" if code == 401 else "forbidden", "message": msg}
 
-        url = f"{SANCOR_BASE_URL}/policies"
-        sancor_headers = {
-            "Authorization": f"Bearer {id_token}",
-            "gss_apiclient_id": SANCOR_CLIENT_ID,
-            "Content-Type": "application/json"
+        tool_name = body.get("name") or body.get("tool")
+        arguments = body.get("arguments") or {}
+        if not tool_name:
+            return 400, {"error": "bad_request", "message": "Debe especificar el nombre de la herramienta MCP en 'name'."}
+
+        status_code, resp_data = engine.invocar_herramienta_mcp(token, str(tool_name), arguments)
+        telemetry.record_event(token[:12], f"mcp_call:{tool_name}", status_code, resp_data.get("latencia_ms", 0.0))
+        return status_code, resp_data
+
+    # 5. Bloqueo de consultas por DNI o referencia libre en /v1/policies
+    if path == "/v1/policies":
+        ok, token, code, msg = engine.validar_bearer_header(auth_header)
+        if not ok:
+            telemetry.record_event("unauthenticated", "policies_rejected", code, 0.1)
+            return code, {"error": "unauthorized" if code == 401 else "forbidden", "message": msg}
+
+        seguro, motivo = engine.validar_argumentos_seguros(query_params)
+        if not seguro:
+            telemetry.record_event(token[:12], "policies_forbidden_identifier", 403, 0.1)
+            return 403, {"error": "forbidden_arbitrary_identifier", "message": motivo}
+
+        return 400, {
+            "error": "use_mcp_endpoint",
+            "message": "Utilice POST /v1/mcp/call con su token OAuth (scope insurance:read) para invocar las herramientas MCP del backend Omni."
         }
-        params = {"referenceNumber": int(ref_autorizada), "branchCode": int(ramo_autorizado)}
-
-        t0 = time.perf_counter()
-        try:
-            resp = requests.get(url, headers=sancor_headers, params=params, timeout=15)
-            lat_pol_ms = round((time.perf_counter() - t0) * 1000, 2)
-            if resp.status_code == 200:
-                return 200, {
-                    "status": "success",
-                    "caso": caso_id,
-                    "referencia": ref_autorizada,
-                    "latencia_policies_ms": lat_pol_ms,
-                    "latencia_auth0_ms": lat_tok,
-                    "polizas": resp.json()
-                }
-            return resp.status_code, {
-                "status": "error_sancor",
-                "caso": caso_id,
-                "http_code": resp.status_code,
-                "latencia_ms": lat_pol_ms,
-                "error_sanitizado": f"Sancor devolvió HTTP {resp.status_code}"
-            }
-        except Exception as e:
-            lat_pol_ms = round((time.perf_counter() - t0) * 1000, 2)
-            return 504, {"status": "timeout_error", "caso": caso_id, "latencia_ms": lat_pol_ms, "error": str(type(e).__name__)}
 
     return 404, {"error": "not_found", "message": f"Ruta no encontrada: {method} {path}"}
+
 
 class CapaHTTPHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -167,9 +132,10 @@ class CapaHTTPHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), CapaHTTPHandler)
-    print(f"🚀 Capa Seguros Server escuchando en puerto {port}")
+    print(f"🚀 Capa Seguros Omni Client escuchando en 0.0.0.0:{port}")
     sys.stdout.flush()
     server.serve_forever()

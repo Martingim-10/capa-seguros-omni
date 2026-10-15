@@ -3,9 +3,15 @@ services:
     name: capa-seguros-omni
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python src/server/api_server.py
+    startCommand: python3 api_server.py
     envVars:
-      - key: SMART_LINK_SECRET
-        generateValue: true
+      - key: OMNI_MCP_BASE_URL
+        value: "https://capa-omni-mcp.onrender.com"
+      - key: AUTH0_DOMAIN
+        value: "dev-1xadutu23ydo7tvz.us.auth0.com"
+      - key: AUTH0_AUDIENCE
+        value: "https://capa-omni-mcp.onrender.com"
+      - key: AUTH0_REQUIRED_SCOPE
+        value: "insurance:read"
       - key: PYTHONUNBUFFERED
         value: "1"

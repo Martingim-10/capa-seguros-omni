@@ -1,46 +1,36 @@
 """
-Módulo de Telemetría y Auditoría de Seguridad (Fail-Closed).
-Diseñado para registrar consultas de forma anonimizada y auditable.
-Principio Fail-Closed: Si el registrador de seguridad o auditoría falla,
-la operación se detiene para evitar fugas de datos sin trazabilidad (Ley 25.326).
+Módulo de Telemetría y Auditoría Fail-Closed.
+Registra eventos operativos sin almacenar DNI, CUIT, tokens ni datos personales.
 """
-import logging
 import hashlib
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
-from datetime import datetime
 
-logger = logging.getLogger("capa.telemetry")
 
 class FailClosedTelemetryError(Exception):
-    """Error fatal cuando el sistema de telemetría o auditoría no puede garantizar el registro."""
     pass
+
 
 class PilotTelemetryManager:
     def __init__(self, fail_closed: bool = True):
         self.fail_closed = fail_closed
-        self._audit_log = []
+        self._events = []
 
-    def _hash_pii(self, valor: str) -> str:
-        """Anonimiza DNI, nombres o patentes mediante hash SHA-256 salteado."""
-        return hashlib.sha256(f"capa-salt:{valor}".encode('utf-8')).hexdigest()[:16]
+    def _anonymize_subject(self, subject_id: str) -> str:
+        return hashlib.sha256(f"omni-audit:{subject_id}".encode("utf-8")).hexdigest()[:16]
 
-    def record_access(self, dni: str, poliza_numero: Optional[int], accion: str, exito: bool) -> Dict[str, Any]:
+    def record_event(self, subject_id: str, action: str, http_status: int, latency_ms: float) -> Dict[str, Any]:
         try:
             entry = {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-                "anonymous_user_id": self._hash_pii(str(dni)),
-                "policy_ref": poliza_numero,
-                "action": accion,
-                "status": "SUCCESS" if exito else "ERROR"
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "subject_hash": self._anonymize_subject(subject_id or "anonymous"),
+                "action": str(action),
+                "http_status": int(http_status),
+                "latency_ms": float(latency_ms)
             }
-            self._audit_log.append(entry)
-            logger.info("Audit entry registered: %s", entry["action"])
+            self._events.append(entry)
             return entry
         except Exception as e:
             if self.fail_closed:
-                raise FailClosedTelemetryError(f"Falla crítica en telemetría de seguridad: {str(e)}") from e
-            logger.warning("Telemetry failure bypassed (fail-open mode): %s", e)
-            return {"status": "TELEMETRY_FAILED", "error": str(e)}
-
-    def get_recent_events(self) -> list:
-        return list(self._audit_log)
+                raise FailClosedTelemetryError(f"Fallo en registro de telemetría fail-closed: {type(e).__name__}") from e
+            return {"status": "telemetry_error"}
